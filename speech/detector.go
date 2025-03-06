@@ -168,17 +168,9 @@ func NewDetector(cfg DetectorConfig) (*Detector, error) {
 	return &sd, nil
 }
 
-// Segment contains timing information of a speech segment.
-type Segment struct {
-	// The relative timestamp in seconds of when a speech segment begins.
-	SpeechStartAt float64
-	// The relative timestamp in seconds of when a speech segment ends.
-	SpeechEndAt float64
-}
-
-func (sd *Detector) Detect(pcm []float32) ([]Segment, error) {
+func (sd *Detector) Detect(pcm []float32) (bool, error) {
 	if sd == nil {
-		return nil, fmt.Errorf("invalid nil detector")
+		return false, fmt.Errorf("invalid nil detector")
 	}
 
 	windowSize := 512
@@ -187,68 +179,17 @@ func (sd *Detector) Detect(pcm []float32) ([]Segment, error) {
 	}
 
 	if len(pcm) < windowSize {
-		return nil, fmt.Errorf("not enough samples")
+		return false, fmt.Errorf("not enough samples")
 	}
 
 	slog.Debug("starting speech detection", slog.Int("samplesLen", len(pcm)))
 
-	minSilenceSamples := sd.cfg.MinSilenceDurationMs * sd.cfg.SampleRate / 1000
-	speechPadSamples := sd.cfg.SpeechPadMs * sd.cfg.SampleRate / 1000
-
-	var segments []Segment
-	for i := 0; i < len(pcm)-windowSize; i += windowSize {
-		speechProb, err := sd.Infer(pcm[i : i+windowSize])
-		if err != nil {
-			return nil, fmt.Errorf("infer failed: %w", err)
-		}
-
-		sd.currSample += windowSize
-
-		if speechProb >= sd.cfg.Threshold && sd.tempEnd != 0 {
-			sd.tempEnd = 0
-		}
-
-		if speechProb >= sd.cfg.Threshold && !sd.triggered {
-			sd.triggered = true
-			speechStartAt := (float64(sd.currSample-windowSize-speechPadSamples) / float64(sd.cfg.SampleRate))
-
-			// We clamp at zero since due to padding the starting position could be negative.
-			if speechStartAt < 0 {
-				speechStartAt = 0
-			}
-
-			slog.Debug("speech start", slog.Float64("startAt", speechStartAt))
-			segments = append(segments, Segment{
-				SpeechStartAt: speechStartAt,
-			})
-		}
-
-		if speechProb < (sd.cfg.Threshold-0.15) && sd.triggered {
-			if sd.tempEnd == 0 {
-				sd.tempEnd = sd.currSample
-			}
-
-			// Not enough silence yet to split, we continue.
-			if sd.currSample-sd.tempEnd < minSilenceSamples {
-				continue
-			}
-
-			speechEndAt := (float64(sd.tempEnd+speechPadSamples) / float64(sd.cfg.SampleRate))
-			sd.tempEnd = 0
-			sd.triggered = false
-			slog.Debug("speech end", slog.Float64("endAt", speechEndAt))
-
-			if len(segments) < 1 {
-				return nil, fmt.Errorf("unexpected speech end")
-			}
-
-			segments[len(segments)-1].SpeechEndAt = speechEndAt
-		}
+	speechProb, err := sd.Infer(pcm[:windowSize])
+	if err != nil {
+		return false, fmt.Errorf("infer failed: %w", err)
 	}
 
-	slog.Debug("speech detection done", slog.Int("segmentsLen", len(segments)))
-
-	return segments, nil
+	return speechProb >= sd.cfg.Threshold, nil
 }
 
 func (sd *Detector) Reset() error {
